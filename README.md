@@ -475,6 +475,49 @@ Remote MCP Connector:
 
 >If `DISCORD_GUILD_ID` is set, the `guildId` parameter becomes optional for all tools above.
 
+
+## 📊 Monitoring (Zabbix)
+
+The `/actuator/health` endpoint is open (no auth required) and returns `{"status":"UP"}` when the service is healthy. This is the integration point for Zabbix monitoring via HTTP Agent.
+
+### Health Check Item
+
+| Field | Value |
+|-------|-------|
+| Type | HTTP Agent |
+| URL | `https://<YOUR_HOST>/actuator/health` |
+| Request method | GET |
+| Type of information | Text |
+| Update interval | `1m` |
+| Preprocessing | JSONPath: `$.status` |
+
+### Response Time Item
+
+| Field | Value |
+|-------|-------|
+| Type | HTTP Agent |
+| URL | `https://<YOUR_HOST>/actuator/health` |
+| Request method | GET |
+| Type of information | Float |
+| Update interval | `1m` |
+
+Zabbix automatically measures the response time of the HTTP request.
+
+### SSL Certificate Expiry
+
+Use the built-in Zabbix template **Website certificate by Zabbix agent 2**, or create a Simple check with key `net.tcp.service.perf[https,<YOUR_HOST>,443]`.
+
+### Recommended Triggers
+
+| Trigger | Expression | Severity |
+|---------|------------|----------|
+| Service down | `last(/host/health.item)<>"UP"` | High |
+| High latency (>3s) | `last(/host/response.item)>3` | Warning |
+| SSL expires in <14 days | `last(/host/ssl.item)<14` | Warning |
+
+> [!TIP]
+> To receive alerts in Discord, configure a Zabbix **Webhook media type** pointing to a Discord webhook URL (`https://discord.com/api/webhooks/<id>/<token>`).
+
 <hr>
 
 A more detailed examples can be found in the [Wiki](https://github.com/SaseQ/discord-mcp/wiki).
