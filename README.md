@@ -24,32 +24,51 @@ Discord by managing channels, sending messages, and retrieving server informatio
 
 ## 🔒 Security
 
-When running in HTTP mode (`SPRING_PROFILES_ACTIVE=http`), the MCP endpoint is protected by **API key authentication**. Every request to `/mcp` must include a valid `Authorization: Bearer <key>` header.
+When running in HTTP mode (`SPRING_PROFILES_ACTIVE=http`), the MCP endpoint is protected by **OAuth 2.0 Client Credentials** authentication. Clients must obtain a JWT access token before accessing `/mcp`.
 
-### API Key Setup
+### OAuth 2.0 Setup
 
-#### 1) Generate a random API key
+#### 1) Generate credentials
 ```bash
-openssl rand -hex 32
-# Example output: a1b2c3d4e5f6...
+openssl rand -hex 16   # Client ID
+openssl rand -hex 32   # Client Secret
 ```
 
-#### 2) Compute the SHA256 hash
+#### 2) Configure as environment variables
 ```bash
-echo -n "a1b2c3d4e5f6..." | sha256sum
-# Example output: 9f86d081884c...
+export DISCORD_MCP_OAUTH_CLIENT_ID="<your_client_id>"
+export DISCORD_MCP_OAUTH_CLIENT_SECRET="<your_client_secret>"
 ```
 
-#### 3) Configure the hash as an environment variable
-```bash
-export DISCORD_MCP_API_KEY_HASH="9f86d081884c..."
+#### 3) How it works
+
+```
+Client                              discord-mcp
+  │                                      │
+  │── POST /oauth/token ────────────────►│  (client_id + client_secret)
+  │◄── {"access_token":"jwt..."} ────────│
+  │                                      │
+  │── GET /mcp ─────────────────────────►│  (Authorization: Bearer jwt...)
+  │◄── MCP response ────────────────────│
 ```
 
-The **raw key** goes into your MCP client configuration (as a Bearer token).
-The **SHA256 hash** goes into `DISCORD_MCP_API_KEY_HASH`. The server never stores the raw key.
+The access token is a JWT valid for 1 hour. Clients automatically refresh it by calling `/oauth/token` again.
 
 > [!IMPORTANT]
-> If `DISCORD_MCP_API_KEY_HASH` is not set, **all requests are rejected** (fail-closed). The `/actuator/health` endpoint remains open for healthchecks.
+> If `DISCORD_MCP_OAUTH_CLIENT_ID` or `DISCORD_MCP_OAUTH_CLIENT_SECRET` is not set, **all requests are rejected** (fail-closed). The `/actuator/health` endpoint remains open for healthchecks.
+
+### Claude Teams Custom Connector
+
+In Claude Teams, add a Custom Connector with:
+
+| Field | Value |
+|-------|-------|
+| Name | `Discord MCP` |
+| Remote MCP server URL | `https://<your-app>.railway.app/mcp` |
+| OAuth Client ID | Your generated Client ID |
+| OAuth Client Secret | Your generated Client Secret |
+
+Claude Teams handles the OAuth flow automatically — it calls `/oauth/token`, gets a JWT, and uses it for all MCP requests.
 
 ### Tool Allowlist
 
@@ -79,11 +98,12 @@ The Docker image runs as a non-root user (`appuser`). Sensitive environment vari
 export DISCORD_TOKEN="YOUR_DISCORD_BOT_TOKEN"
 export DISCORD_GUILD_ID="OPTIONAL_DEFAULT_SERVER_ID"
 export SPRING_PROFILES_ACTIVE=http
-export DISCORD_MCP_API_KEY_HASH="SHA256_HEX_HASH_OF_YOUR_API_KEY"
+export DISCORD_MCP_OAUTH_CLIENT_ID="YOUR_CLIENT_ID"
+export DISCORD_MCP_OAUTH_CLIENT_SECRET="YOUR_CLIENT_SECRET"
 ```
 
 > [!NOTE]
-> See the [Security](#-security) section for how to generate the API key and its hash.
+> See the [Security](#-security) section for how to generate OAuth credentials.
 
 > [!IMPORTANT]
 > Instructions for creating a Discord bot and retrieving its token can be found [here](https://discordjs.guide/legacy/preparations/app-setup).
@@ -102,7 +122,8 @@ docker run -d -i \
   -e SPRING_PROFILES_ACTIVE \
   -e DISCORD_TOKEN \
   -e DISCORD_GUILD_ID \
-  -e DISCORD_MCP_API_KEY_HASH \
+  -e DISCORD_MCP_OAUTH_CLIENT_ID \
+  -e DISCORD_MCP_OAUTH_CLIENT_SECRET \
   saseq/discord-mcp:latest
 ```
 
@@ -129,12 +150,13 @@ cat > .env <<EOF
 SPRING_PROFILES_ACTIVE=http
 DISCORD_TOKEN=<YOUR_DISCORD_BOT_TOKEN>
 DISCORD_GUILD_ID=<OPTIONAL_DEFAULT_SERVER_ID>
-DISCORD_MCP_API_KEY_HASH=<SHA256_HEX_HASH_OF_YOUR_API_KEY>
+DISCORD_MCP_OAUTH_CLIENT_ID=<YOUR_CLIENT_ID>
+DISCORD_MCP_OAUTH_CLIENT_SECRET=<YOUR_CLIENT_SECRET>
 EOF
 ```
 
 > [!NOTE]
-> See the [Security](#-security) section for how to generate the API key and its hash.
+> See the [Security](#-security) section for how to generate OAuth credentials.
 
 #### 4) Start one shared MCP server container
 ```bash
@@ -178,7 +200,8 @@ Run the JAR as a long-running server:
 ```bash
 DISCORD_TOKEN=<YOUR_DISCORD_BOT_TOKEN> \
 DISCORD_GUILD_ID=<OPTIONAL_DEFAULT_SERVER_ID> \
-DISCORD_MCP_API_KEY_HASH=<SHA256_HEX_HASH_OF_YOUR_API_KEY> \
+DISCORD_MCP_OAUTH_CLIENT_ID=<YOUR_CLIENT_ID>
+DISCORD_MCP_OAUTH_CLIENT_SECRET=<YOUR_CLIENT_SECRET> \
 SPRING_PROFILES_ACTIVE=http \
 java -jar /absolute/path/to/discord-mcp-1.0.0.jar
 ```
@@ -191,6 +214,16 @@ Default MCP endpoint URL (HTTP profile): `http://localhost:8085/mcp`
 
 ## 🔗 Connections
 
+> [!NOTE]
+> **Claude Teams** handles OAuth automatically via Custom Connector (see [Security](#-security)).
+> For other clients, obtain a JWT token first by calling `POST /oauth/token` with your `client_id` and `client_secret`, then use the returned `access_token` as the Bearer token.
+>
+> ```bash
+> curl -s -X POST http://localhost:8085/oauth/token \
+>   -d "grant_type=client_credentials&client_id=<ID>&client_secret=<SECRET>"
+> # Returns: {"access_token":"eyJ...","token_type":"Bearer","expires_in":3600}
+> ```
+
 ### ► 🗞️ Default config.json Connection
 
 Recommended (HTTP singleton mode):
@@ -200,7 +233,7 @@ Recommended (HTTP singleton mode):
     "discord-mcp": {
       "url": "http://localhost:8085/mcp",
       "headers": {
-        "Authorization": "Bearer <YOUR_RAW_API_KEY>"
+        "Authorization": "Bearer <JWT_ACCESS_TOKEN>"
       }
     }
   }
@@ -208,7 +241,7 @@ Recommended (HTTP singleton mode):
 ```
 
 > [!IMPORTANT]
-> Use the **raw API key** (not the SHA256 hash) in the `Authorization` header.
+> Replace `<JWT_ACCESS_TOKEN>` with the token obtained from `/oauth/token`. Tokens expire after 1 hour.
 
 Legacy mode (stdio, starts a new process/container per client session):
 ```json

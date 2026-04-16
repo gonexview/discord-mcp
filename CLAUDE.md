@@ -27,7 +27,8 @@ src/main/java/dev/saseq/
 ├── DiscordMcpApplication.java          # Spring Boot entry point
 ├── configs/
 │   ├── DiscordMcpConfig.java           # Registers service beans as MCP tools + allowlist filtering
-│   ├── ApiKeyAuthFilter.java           # [OUR CODE] Bearer token auth (SHA256 hash comparison)
+│   ├── OAuthTokenController.java       # [OUR CODE] POST /oauth/token (Client Credentials → JWT)
+│   ├── ApiKeyAuthFilter.java           # [OUR CODE] JWT Bearer token validation
 │   ├── SecurityConfig.java             # [OUR CODE] Spring Security filter chain
 │   ├── FilteredToolCallbackProvider.java  # [OUR CODE] Tool allowlist wrapper
 │   └── McpTransportStartupLogger.java  # Startup log for transport mode
@@ -43,7 +44,7 @@ Files marked `[OUR CODE]` are the security additions. Everything else is upstrea
 
 ## Security Rules
 
-- **Fail-closed auth**: `DISCORD_MCP_API_KEY_HASH` env var must be set or all `/mcp` requests are rejected. Only `/actuator/health` is open.
+- **OAuth 2.0 Client Credentials**: `DISCORD_MCP_OAUTH_CLIENT_ID` + `DISCORD_MCP_OAUTH_CLIENT_SECRET` must be set. Clients call `POST /oauth/token` to get a JWT, then use it as Bearer token. `/actuator/health` and `/oauth/token` are open.
 - **Tool allowlist**: Only read+send tools enabled by default via `discord.mcp.tools.enabled` in `application-http.properties`. **Never expose moderation tools (ban, kick, delete) without explicit approval.**
 - **Profile-gated**: `ApiKeyAuthFilter` and `SecurityConfig` use `@Profile("http")` — they only activate when `SPRING_PROFILES_ACTIVE=http`. The stdio mode is unaffected.
 - **Non-root container**: Dockerfile runs as `appuser`, no secrets baked into image layers.
@@ -53,7 +54,7 @@ Files marked `[OUR CODE]` are the security additions. Everything else is upstrea
 | File | Purpose |
 |------|---------|
 | `application.properties` | Default config (stdio mode) |
-| `application-http.properties` | HTTP mode: auth hash, tool allowlist, MCP endpoint |
+| `application-http.properties` | HTTP mode: OAuth credentials, tool allowlist, MCP endpoint |
 | `.env.example` | Template for environment variables |
 | `docker-compose.yml` | Local Docker orchestration |
 
@@ -63,7 +64,8 @@ Railway with automatic HTTPS. Required env vars:
 - `SPRING_PROFILES_ACTIVE=http`
 - `DISCORD_TOKEN` (bot token)
 - `DISCORD_GUILD_ID` (server ID)
-- `DISCORD_MCP_API_KEY_HASH` (SHA256 hex hash of API key)
+- `DISCORD_MCP_OAUTH_CLIENT_ID` (OAuth client ID)
+- `DISCORD_MCP_OAUTH_CLIENT_SECRET` (OAuth client secret, also used as JWT signing key)
 
 ## Working in This Repo
 
