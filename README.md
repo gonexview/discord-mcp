@@ -22,6 +22,51 @@ designed to integrate Discord bots with MCP-compatible applications such as Clau
 Discord by managing channels, sending messages, and retrieving server information. Ideal for building powerful Discord automation and AI-driven workflows.
 
 
+## 🔒 Security
+
+When running in HTTP mode (`SPRING_PROFILES_ACTIVE=http`), the MCP endpoint is protected by **API key authentication**. Every request to `/mcp` must include a valid `Authorization: Bearer <key>` header.
+
+### API Key Setup
+
+#### 1) Generate a random API key
+```bash
+openssl rand -hex 32
+# Example output: a1b2c3d4e5f6...
+```
+
+#### 2) Compute the SHA256 hash
+```bash
+echo -n "a1b2c3d4e5f6..." | sha256sum
+# Example output: 9f86d081884c...
+```
+
+#### 3) Configure the hash as an environment variable
+```bash
+export DISCORD_MCP_API_KEY_HASH="9f86d081884c..."
+```
+
+The **raw key** goes into your MCP client configuration (as a Bearer token).
+The **SHA256 hash** goes into `DISCORD_MCP_API_KEY_HASH`. The server never stores the raw key.
+
+> [!IMPORTANT]
+> If `DISCORD_MCP_API_KEY_HASH` is not set, **all requests are rejected** (fail-closed). The `/actuator/health` endpoint remains open for healthchecks.
+
+### Tool Allowlist
+
+By default, only a safe subset of tools is enabled (read + send messages). This is controlled by the `discord.mcp.tools.enabled` property in `application-http.properties`.
+
+To customize which tools are exposed, set the property to a comma-separated list of tool names:
+```properties
+discord.mcp.tools.enabled=get_server_info,list_channels,read_messages,send_message
+```
+
+Leave the property empty to expose all tools (not recommended for production).
+
+### Container Hardening
+
+The Docker image runs as a non-root user (`appuser`). Sensitive environment variables (`DISCORD_TOKEN`, etc.) are only injected at runtime and are not baked into image layers.
+
+
 ## 🔬 Installation
 
 ### ► 🐳 Docker Installation (Recommended)
@@ -34,7 +79,11 @@ Discord by managing channels, sending messages, and retrieving server informatio
 export DISCORD_TOKEN="YOUR_DISCORD_BOT_TOKEN"
 export DISCORD_GUILD_ID="OPTIONAL_DEFAULT_SERVER_ID"
 export SPRING_PROFILES_ACTIVE=http
+export DISCORD_MCP_API_KEY_HASH="SHA256_HEX_HASH_OF_YOUR_API_KEY"
 ```
+
+> [!NOTE]
+> See the [Security](#-security) section for how to generate the API key and its hash.
 
 > [!IMPORTANT]
 > Instructions for creating a Discord bot and retrieving its token can be found [here](https://discordjs.guide/legacy/preparations/app-setup).
@@ -53,6 +102,7 @@ docker run -d -i \
   -e SPRING_PROFILES_ACTIVE \
   -e DISCORD_TOKEN \
   -e DISCORD_GUILD_ID \
+  -e DISCORD_MCP_API_KEY_HASH \
   saseq/discord-mcp:latest
 ```
 
@@ -79,8 +129,12 @@ cat > .env <<EOF
 SPRING_PROFILES_ACTIVE=http
 DISCORD_TOKEN=<YOUR_DISCORD_BOT_TOKEN>
 DISCORD_GUILD_ID=<OPTIONAL_DEFAULT_SERVER_ID>
+DISCORD_MCP_API_KEY_HASH=<SHA256_HEX_HASH_OF_YOUR_API_KEY>
 EOF
 ```
+
+> [!NOTE]
+> See the [Security](#-security) section for how to generate the API key and its hash.
 
 #### 4) Start one shared MCP server container
 ```bash
@@ -124,6 +178,7 @@ Run the JAR as a long-running server:
 ```bash
 DISCORD_TOKEN=<YOUR_DISCORD_BOT_TOKEN> \
 DISCORD_GUILD_ID=<OPTIONAL_DEFAULT_SERVER_ID> \
+DISCORD_MCP_API_KEY_HASH=<SHA256_HEX_HASH_OF_YOUR_API_KEY> \
 SPRING_PROFILES_ACTIVE=http \
 java -jar /absolute/path/to/discord-mcp-1.0.0.jar
 ```
@@ -143,11 +198,17 @@ Recommended (HTTP singleton mode):
 {
   "mcpServers": {
     "discord-mcp": {
-      "url": "http://localhost:8085/mcp"
+      "url": "http://localhost:8085/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_RAW_API_KEY>"
+      }
     }
   }
 }
 ```
+
+> [!IMPORTANT]
+> Use the **raw API key** (not the SHA256 hash) in the `Authorization` header.
 
 Legacy mode (stdio, starts a new process/container per client session):
 ```json
@@ -177,7 +238,7 @@ Legacy mode (stdio, starts a new process/container per client session):
 
 Recommended (HTTP singleton mode):
 ```bash
-claude mcp add discord-mcp --transport http http://localhost:8085/mcp
+claude mcp add discord-mcp --transport http --header "Authorization: Bearer <YOUR_RAW_API_KEY>" http://localhost:8085/mcp
 ```
 
 Legacy mode (stdio, starts a new process/container per client session):
@@ -193,7 +254,7 @@ claude mcp add discord-mcp -- docker run --rm -i -e DISCORD_TOKEN=<YOUR_DISCORD_
     </summary>
 
 ```bash
-codex mcp add discord-mcp --url http://localhost:8085/mcp
+codex mcp add discord-mcp --url http://localhost:8085/mcp --header "Authorization: Bearer <YOUR_RAW_API_KEY>"
 codex mcp list
 ```
 
@@ -206,7 +267,7 @@ codex mcp list
 
 Run this command:
 ```bash
-openclaw mcp set discord-mcp '{"url":"http://localhost:8085/mcp","transport":"streamable-http"}'
+openclaw mcp set discord-mcp '{"url":"http://localhost:8085/mcp","transport":"streamable-http","headers":{"Authorization":"Bearer <YOUR_RAW_API_KEY>"}}'
 openclaw mcp list
 ```
 
@@ -219,7 +280,10 @@ Pasting the following configuration into your OpenClaw `~/.openclaw/config.json`
     "servers": {
       "discord-mcp": {
         "url": "http://localhost:8085/mcp",
-        "transport": "streamable-http"
+        "transport": "streamable-http",
+        "headers": {
+          "Authorization": "Bearer <YOUR_RAW_API_KEY>"
+        }
       }
     }
   }
@@ -240,7 +304,10 @@ Pasting the following configuration into your Cursor `~/.cursor/mcp.json` file i
 {
   "mcpServers": {
     "discord-mcp": {
-      "url": "http://localhost:8085/mcp"
+      "url": "http://localhost:8085/mcp",
+      "headers": {
+        "Authorization": "Bearer <YOUR_RAW_API_KEY>"
+      }
     }
   }
 }
@@ -257,8 +324,9 @@ Pasting the following configuration into your Cursor `~/.cursor/mcp.json` file i
 1. Open n8n and add an **MCP Client** node.
 2. Choose **HTTP** or **Streamable HTTP** transport (depending on your n8n version/node options).
 3. Set the server URL to: `http://localhost:8085/mcp`
-4. Save the node and test the connection.
-5. After connecting, you can use the available Discord tools exposed by `discord-mcp` inside your workflow.
+4. Add the `Authorization` header with value `Bearer <YOUR_RAW_API_KEY>`.
+5. Save the node and test the connection.
+6. After connecting, you can use the available Discord tools exposed by `discord-mcp` inside your workflow.
 
 #### Notes
 - If n8n is running in Docker, `localhost` may point to the n8n container itself, not your host machine.
@@ -308,95 +376,102 @@ Remote MCP Connector:
 
 ## 🛠️ Available Tools
 
+> [!NOTE]
+> By default, only tools marked with ✅ below are enabled. Tools marked with 🔒 are disabled by the allowlist and must be explicitly added to `discord.mcp.tools.enabled` to use. See [Security](#-security) for details.
+
 #### Server Information
-- [`get_server_info`](): Get detailed discord server information
+- ✅ [`get_server_info`](): Get detailed discord server information
 
 #### User Management
-- [`get_user_id_by_name`](): Get a Discord user's ID by username in a guild for ping usage `<@id>`
-- [`send_private_message`](): Send a private message to a specific user
-- [`edit_private_message`](): Edit a private message from a specific user
-- [`delete_private_message`](): Delete a private message from a specific user
-- [`read_private_messages`](): Read recent message history from a specific user (includes attachment metadata)
+- 🔒 [`get_user_id_by_name`](): Get a Discord user's ID by username in a guild for ping usage `<@id>`
+- 🔒 [`send_private_message`](): Send a private message to a specific user
+- 🔒 [`edit_private_message`](): Edit a private message from a specific user
+- 🔒 [`delete_private_message`](): Delete a private message from a specific user
+- 🔒 [`read_private_messages`](): Read recent message history from a specific user (includes attachment metadata)
 
 #### Message Management
-- [`send_message`](): Send a message to a specific channel
-- [`edit_message`](): Edit a message from a specific channel
-- [`delete_message`](): Delete a message from a specific channel
-- [`read_messages`](): Read recent message history from a specific channel (includes attachment metadata)
-- [`add_reaction`](): Add a reaction (emoji) to a specific message
-- [`remove_reaction`](): Remove a specified reaction (emoji) from a message
+- ✅ [`send_message`](): Send a message to a specific channel
+- ✅ [`edit_message`](): Edit a message from a specific channel
+- 🔒 [`delete_message`](): Delete a message from a specific channel
+- ✅ [`read_messages`](): Read recent message history from a specific channel (includes attachment metadata)
+- ✅ [`add_reaction`](): Add a reaction (emoji) to a specific message
+- ✅ [`remove_reaction`](): Remove a specified reaction (emoji) from a message
+- ✅ [`get_attachment`](): Get attachment metadata from a specific message
 
 #### Channel Management
-- [`create_text_channel`](): Create a new text channel
-- [`edit_text_channel`](): Edit settings of a text channel (name, topic, nsfw, slowmode, category, position)
-- [`delete_channel`](): Delete a channel
-- [`find_channel`](): Find a channel type and ID using name and server ID
-- [`list_channels`](): List of all channels
-- [`get_channel_info`](): Get detailed information about a channel
-- [`move_channel`](): Move a channel to another category and/or change its position
+- 🔒 [`create_text_channel`](): Create a new text channel
+- 🔒 [`edit_text_channel`](): Edit settings of a text channel (name, topic, nsfw, slowmode, category, position)
+- 🔒 [`delete_channel`](): Delete a channel
+- ✅ [`find_channel`](): Find a channel type and ID using name and server ID
+- ✅ [`list_channels`](): List of all channels
+- ✅ [`get_channel_info`](): Get detailed information about a channel
+- 🔒 [`move_channel`](): Move a channel to another category and/or change its position
 
 #### Category Management
-- [`create_category`](): Create a new category for channels
-- [`delete_category`](): Delete a category
-- [`find_category`](): Find a category ID using name and server ID
-- [`list_channels_in_category`](): List of channels in a specific category
+- 🔒 [`create_category`](): Create a new category for channels
+- 🔒 [`delete_category`](): Delete a category
+- ✅ [`find_category`](): Find a category ID using name and server ID
+- ✅ [`list_channels_in_category`](): List of channels in a specific category
 
 #### Webhook Management
-- [`create_webhook`](): Create a new webhook on a specific channel
-- [`delete_webhook`](): Delete a webhook
-- [`list_webhooks`](): List of webhooks on a specific channel
-- [`send_webhook_message`](): Send a message via webhook
+- 🔒 [`create_webhook`](): Create a new webhook on a specific channel
+- 🔒 [`delete_webhook`](): Delete a webhook
+- 🔒 [`list_webhooks`](): List of webhooks on a specific channel
+- 🔒 [`send_webhook_message`](): Send a message via webhook
 
 #### Role Management
-- [`list_roles`](): Get a list of all roles on the server with their details
-- [`create_role`](): Create a new role on the server
-- [`edit_role`](): Modify an existing role's settings
-- [`delete_role`](): Permanently delete a role from the server
-- [`assign_role`](): Assign a role to a user
-- [`remove_role`](): Remove a role from a user
+- ✅ [`list_roles`](): Get a list of all roles on the server with their details
+- 🔒 [`create_role`](): Create a new role on the server
+- 🔒 [`edit_role`](): Modify an existing role's settings
+- 🔒 [`delete_role`](): Permanently delete a role from the server
+- 🔒 [`assign_role`](): Assign a role to a user
+- 🔒 [`remove_role`](): Remove a role from a user
 
 #### Moderation and User Management
-- [`kick_member`](): Kicks a member from the server
-- [`ban_member`](): Bans a user from the server
-- [`unban_member`](): Removes a ban from a user
-- [`timeout_member`](): Disables communication for a member for a specified duration
-- [`remove_timeout`](): Removes a timeout (unmute) from a member before it expires
-- [`set_nickname`](): Changes a member's nickname on the server
-- [`get_bans`](): Returns a list of banned users on the server with ban reasons
+- 🔒 [`kick_member`](): Kicks a member from the server
+- 🔒 [`ban_member`](): Bans a user from the server
+- 🔒 [`unban_member`](): Removes a ban from a user
+- 🔒 [`timeout_member`](): Disables communication for a member for a specified duration
+- 🔒 [`remove_timeout`](): Removes a timeout (unmute) from a member before it expires
+- 🔒 [`set_nickname`](): Changes a member's nickname on the server
+- 🔒 [`get_bans`](): Returns a list of banned users on the server with ban reasons
 
 #### Voice & Stage Channel Management
-- [`create_voice_channel`](): Create a new voice channel in a guild
-- [`create_stage_channel`](): Create a new stage channel for audio events
-- [`edit_voice_channel`](): Edit settings of a voice or stage channel (name, bitrate, user limit, region)
-- [`move_member`](): Move a member to another voice channel
-- [`disconnect_member`](): Disconnect a member from their current voice channel
-- [`modify_voice_state`](): Server mute or deafen a member in voice channels
+- 🔒 [`create_voice_channel`](): Create a new voice channel in a guild
+- 🔒 [`create_stage_channel`](): Create a new stage channel for audio events
+- 🔒 [`edit_voice_channel`](): Edit settings of a voice or stage channel (name, bitrate, user limit, region)
+- 🔒 [`move_member`](): Move a member to another voice channel
+- 🔒 [`disconnect_member`](): Disconnect a member from their current voice channel
+- 🔒 [`modify_voice_state`](): Server mute or deafen a member in voice channels
 
 #### Scheduled Events Management
-- [`create_guild_scheduled_event`](): Schedule a new event on the server (voice, stage, or external)
-- [`edit_guild_scheduled_event`](): Modify event details or change its status (start, complete, cancel)
-- [`delete_guild_scheduled_event`](): Permanently delete a scheduled event
-- [`list_guild_scheduled_events`](): List all active and scheduled events on the server
-- [`get_guild_scheduled_event_users`](): Get list of users interested in a scheduled event
+- 🔒 [`create_guild_scheduled_event`](): Schedule a new event on the server (voice, stage, or external)
+- 🔒 [`edit_guild_scheduled_event`](): Modify event details or change its status (start, complete, cancel)
+- 🔒 [`delete_guild_scheduled_event`](): Permanently delete a scheduled event
+- ✅ [`list_guild_scheduled_events`](): List all active and scheduled events on the server
+- 🔒 [`get_guild_scheduled_event_users`](): Get list of users interested in a scheduled event
 
 #### Channel Permission Overwrites
-- [`list_channel_permission_overwrites`](): List all permission overwrites for a channel with role/member breakdown
-- [`upsert_role_channel_permissions`](): Create or update permission overwrite for a role on a channel
-- [`upsert_member_channel_permissions`](): Create or update permission overwrite for a member on a channel
-- [`delete_channel_permission_overwrite`](): Delete a permission overwrite for a role or member from a channel
+- 🔒 [`list_channel_permission_overwrites`](): List all permission overwrites for a channel with role/member breakdown
+- 🔒 [`upsert_role_channel_permissions`](): Create or update permission overwrite for a role on a channel
+- 🔒 [`upsert_member_channel_permissions`](): Create or update permission overwrite for a member on a channel
+- 🔒 [`delete_channel_permission_overwrite`](): Delete a permission overwrite for a role or member from a channel
 
 #### Invite Management
-- [`create_invite`](): Create a new invite link for a specific channel
-- [`list_invites`](): List all active invites on the server with their statistics
-- [`delete_invite`](): Delete (revoke) an invite so the link stops working
-- [`get_invite_details`](): Get details about a specific invite (works for any public invite)
+- 🔒 [`create_invite`](): Create a new invite link for a specific channel
+- 🔒 [`list_invites`](): List all active invites on the server with their statistics
+- 🔒 [`delete_invite`](): Delete (revoke) an invite so the link stops working
+- 🔒 [`get_invite_details`](): Get details about a specific invite (works for any public invite)
 
 #### Emoji Management
-- [`list_emojis`](): List all custom emojis on the server
-- [`get_emoji_details`](): Get detailed information about a specific custom emoji
-- [`create_emoji`](): Upload a new custom emoji to the server (base64 or image URL, max 256KB)
-- [`edit_emoji`](): Edit an existing emoji's name or role restrictions
-- [`delete_emoji`](): Permanently delete a custom emoji from the server
+- ✅ [`list_emojis`](): List all custom emojis on the server
+- 🔒 [`get_emoji_details`](): Get detailed information about a specific custom emoji
+- 🔒 [`create_emoji`](): Upload a new custom emoji to the server (base64 or image URL, max 256KB)
+- 🔒 [`edit_emoji`](): Edit an existing emoji's name or role restrictions
+- 🔒 [`delete_emoji`](): Permanently delete a custom emoji from the server
+
+#### Thread Management
+- ✅ [`list_active_threads`](): List all active threads in the server
 
 >If `DISCORD_GUILD_ID` is set, the `guildId` parameter becomes optional for all tools above.
 
