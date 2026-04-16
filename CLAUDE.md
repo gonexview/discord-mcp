@@ -44,9 +44,13 @@ Files marked `[OUR CODE]` are the security additions. Everything else is upstrea
 
 ## Security Rules
 
-- **OAuth 2.0 Client Credentials**: `DISCORD_MCP_OAUTH_CLIENT_ID` + `DISCORD_MCP_OAUTH_CLIENT_SECRET` must be set. Clients call `POST /oauth/token` to get a JWT, then use it as Bearer token. `/actuator/health` and `/oauth/token` are open.
+- **OAuth 2.0**: `DISCORD_MCP_OAUTH_CLIENT_ID` + `DISCORD_MCP_OAUTH_CLIENT_SECRET` must be set. Supports two grant types:
+  - **Authorization Code + PKCE** (used by Claude Teams) — flow: `/.well-known/oauth-authorization-server` → `/authorize` → `/token` → `/mcp`
+  - **Client Credentials** (used by scripts) — direct `POST /token` with credentials
+- **Open paths** (no auth): `/actuator/**`, `/.well-known/**`, `/authorize`, `/token`, `/oauth/token`. Everything else requires a valid JWT.
 - **Tool allowlist**: Only read+send tools enabled by default via `discord.mcp.tools.enabled` in `application-http.properties`. **Never expose moderation tools (ban, kick, delete) without explicit approval.**
-- **Profile-gated**: `ApiKeyAuthFilter` and `SecurityConfig` use `@Profile("http")` — they only activate when `SPRING_PROFILES_ACTIVE=http`. The stdio mode is unaffected.
+- **Discord bot permissions**: separate layer from MCP/OAuth. The bot itself needs `VIEW_CHANNEL` + `READ_MESSAGE_HISTORY` on private channels, otherwise tools fail with `Missing permission: VIEW_CHANNEL`.
+- **Profile-gated**: `ApiKeyAuthFilter`, `SecurityConfig`, and `OAuthTokenController` use `@Profile("http")` — they only activate when `SPRING_PROFILES_ACTIVE=http`. The stdio mode is unaffected.
 - **Non-root container**: Dockerfile runs as `appuser`, no secrets baked into image layers.
 
 ## Key Config Files

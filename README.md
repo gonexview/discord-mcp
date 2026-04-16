@@ -24,7 +24,12 @@ Discord by managing channels, sending messages, and retrieving server informatio
 
 ## 🔒 Security
 
-When running in HTTP mode (`SPRING_PROFILES_ACTIVE=http`), the MCP endpoint is protected by **OAuth 2.0 Client Credentials** authentication. Clients must obtain a JWT access token before accessing `/mcp`.
+When running in HTTP mode (`SPRING_PROFILES_ACTIVE=http`), the MCP endpoint is protected by **OAuth 2.0**. The server supports two grant types:
+
+- **Authorization Code + PKCE** — used by Claude Teams Custom Connector
+- **Client Credentials** — used by scripts, CLI tools, and direct API access
+
+Both flows return a JWT access token valid for 1 hour.
 
 ### OAuth 2.0 Setup
 
@@ -34,28 +39,60 @@ openssl rand -hex 16   # Client ID
 openssl rand -hex 32   # Client Secret
 ```
 
+Or use the helper script:
+```bash
+./examples/generate_oauth_credentials.sh
+```
+
 #### 2) Configure as environment variables
 ```bash
 export DISCORD_MCP_OAUTH_CLIENT_ID="<your_client_id>"
 export DISCORD_MCP_OAUTH_CLIENT_SECRET="<your_client_secret>"
 ```
 
-#### 3) How it works
-
-```
-Client                              discord-mcp
-  │                                      │
-  │── POST /oauth/token ────────────────►│  (client_id + client_secret)
-  │◄── {"access_token":"jwt..."} ────────│
-  │                                      │
-  │── GET /mcp ─────────────────────────►│  (Authorization: Bearer jwt...)
-  │◄── MCP response ────────────────────│
-```
-
-The access token is a JWT valid for 1 hour. Clients automatically refresh it by calling `/oauth/token` again.
-
 > [!IMPORTANT]
 > If `DISCORD_MCP_OAUTH_CLIENT_ID` or `DISCORD_MCP_OAUTH_CLIENT_SECRET` is not set, **all requests are rejected** (fail-closed). The `/actuator/health` endpoint remains open for healthchecks.
+
+### OAuth Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /.well-known/oauth-authorization-server` | Discovery metadata (authorize/token URLs, supported grants) |
+| `GET /.well-known/oauth-protected-resource` | Identifies the protected resource and its authorization server |
+| `GET /authorize` | Authorization Code flow entry point (auto-approves valid clients) |
+| `POST /token` | Token endpoint (alias of `/oauth/token` — both work) |
+| `POST /oauth/token` | Token endpoint (returns JWT) |
+
+### Flow 1: Authorization Code + PKCE (Claude Teams)
+
+```
+Claude Teams                                    discord-mcp
+     │                                               │
+     │── GET /.well-known/oauth-authorization-server►│  (discover endpoints)
+     │◄── {endpoints metadata} ──────────────────────│
+     │                                               │
+     │── GET /authorize?code_challenge=... ─────────►│
+     │◄── 302 redirect with ?code=xxx ───────────────│
+     │                                               │
+     │── POST /token (code + code_verifier) ────────►│
+     │◄── {"access_token":"jwt..."} ─────────────────│
+     │                                               │
+     │── GET /mcp (Authorization: Bearer jwt...) ───►│
+     │◄── MCP response ──────────────────────────────│
+```
+
+### Flow 2: Client Credentials (Scripts/CLI)
+
+```bash
+# Get token
+curl -s -X POST https://<your-app>.railway.app/token \
+  -d "grant_type=client_credentials&client_id=<ID>&client_secret=<SECRET>"
+# → {"access_token":"jwt...","token_type":"Bearer","expires_in":3600}
+
+# Use token
+curl https://<your-app>.railway.app/mcp \
+  -H "Authorization: Bearer <jwt>"
+```
 
 ### Claude Teams Custom Connector
 
@@ -68,7 +105,10 @@ In Claude Teams, add a Custom Connector with:
 | OAuth Client ID | Your generated Client ID |
 | OAuth Client Secret | Your generated Client Secret |
 
-Claude Teams handles the OAuth flow automatically — it calls `/oauth/token`, gets a JWT, and uses it for all MCP requests.
+> [!IMPORTANT]
+> The URL **must include `/mcp` at the end**. Without it, MCP requests hit the root path and fail with 403.
+
+Claude Teams handles the OAuth Authorization Code + PKCE flow automatically. It discovers endpoints via `/.well-known/oauth-authorization-server`, redirects through `/authorize`, exchanges the code at `/token`, and uses the returned JWT for all MCP calls.
 
 ### Tool Allowlist
 
@@ -80,6 +120,33 @@ discord.mcp.tools.enabled=get_server_info,list_channels,read_messages,send_messa
 ```
 
 Leave the property empty to expose all tools (not recommended for production).
+
+### Discord Bot Permissions
+
+The MCP server reaches Discord through a bot account, which is subject to Discord's own permission system. This is a **separate layer** from the OAuth + tool allowlist — even if a tool is allowed, the bot still needs Discord-level permission to act on a given channel.
+
+**Symptom**: requests fail with `Missing permission: VIEW_CHANNEL` when the bot tries to read or post in private/restricted channels.
+
+**Required Discord permissions** for the read+send default allowlist:
+
+| Permission | Used by |
+|------------|---------|
+| View Channels | `list_channels`, `read_messages`, `find_channel` |
+| Read Message History | `read_messages` |
+| Send Messages | `send_message`, `edit_message` |
+| Add Reactions | `add_reaction`, `remove_reaction` |
+| Use External Emojis | optional, for custom emoji reactions |
+
+**Recommended setup** (one-time per server):
+
+1. Create a role `MCP-Reader` in **Server Settings → Roles** with the permissions above
+2. Assign the role to the bot
+3. For each private channel you want exposed: **Edit Channel → Permissions → Add `MCP-Reader`**
+
+**Quick fix per channel** (if you don't want a dedicated role): edit the channel permissions, add the bot directly, grant `View Channel` + `Read Message History`.
+
+> [!NOTE]
+> Public channels work out of the box if `@everyone` has `View Channel`. Only private/restricted channels need explicit bot permissions.
 
 ### Container Hardening
 
