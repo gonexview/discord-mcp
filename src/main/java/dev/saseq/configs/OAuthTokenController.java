@@ -2,10 +2,14 @@ package dev.saseq.configs;
 
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -13,14 +17,25 @@ import org.springframework.web.bind.annotation.RestController;
 import javax.crypto.SecretKey;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.Date;
+import java.util.HexFormat;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Profile("http")
 @RestController
 public class OAuthTokenController {
 
+    private static final Logger log = LoggerFactory.getLogger(OAuthTokenController.class);
     private static final long TOKEN_EXPIRY_SECONDS = 3600;
+    private static final long CODE_EXPIRY_SECONDS = 300;
+    private static final SecureRandom RANDOM = new SecureRandom();
+
+    private final ConcurrentHashMap<String, AuthCode> pendingCodes = new ConcurrentHashMap<>();
 
     @Value("${discord.mcp.oauth.client-id:}")
     private String expectedClientId;
@@ -28,33 +43,121 @@ public class OAuthTokenController {
     @Value("${discord.mcp.oauth.client-secret:}")
     private String expectedClientSecret;
 
-    @PostMapping(value = "/oauth/token", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
-    public void token(@RequestParam("grant_type") String grantType,
-                      @RequestParam("client_id") String clientId,
-                      @RequestParam("client_secret") String clientSecret,
-                      HttpServletResponse response) throws IOException {
+    @GetMapping("/authorize")
+    public void authorize(@RequestParam("response_type") String responseType,
+                          @RequestParam("client_id") String clientId,
+                          @RequestParam("redirect_uri") String redirectUri,
+                          @RequestParam(value = "code_challenge", required = false) String codeChallenge,
+                          @RequestParam(value = "code_challenge_method", required = false) String codeChallengeMethod,
+                          @RequestParam(value = "state", required = false) String state,
+                          HttpServletResponse response) throws IOException {
 
-        response.setContentType("application/json");
-
-        if (expectedClientId == null || expectedClientId.isBlank()
-                || expectedClientSecret == null || expectedClientSecret.isBlank()) {
+        if (!validateConfig()) {
             sendError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
                     "server_error", "OAuth credentials not configured");
             return;
         }
 
-        if (!"client_credentials".equals(grantType)) {
+        if (!"code".equals(responseType)) {
             sendError(response, HttpServletResponse.SC_BAD_REQUEST,
-                    "unsupported_grant_type", "Only client_credentials is supported");
+                    "unsupported_response_type", "Only response_type=code is supported");
             return;
         }
 
-        if (!expectedClientId.equals(clientId) || !expectedClientSecret.equals(clientSecret)) {
+        if (!expectedClientId.equals(clientId)) {
             sendError(response, HttpServletResponse.SC_UNAUTHORIZED,
-                    "invalid_client", "Invalid client credentials");
+                    "invalid_client", "Unknown client_id");
             return;
         }
 
+        cleanExpiredCodes();
+
+        String code = generateCode();
+        pendingCodes.put(code, new AuthCode(
+                codeChallenge, codeChallengeMethod, redirectUri, Instant.now().plusSeconds(CODE_EXPIRY_SECONDS)));
+
+        String redirect = redirectUri + "?code=" + code;
+        if (state != null && !state.isBlank()) {
+            redirect += "&state=" + state;
+        }
+
+        log.info("OAuth authorize: issued code for client_id={}, redirecting", clientId);
+        response.sendRedirect(redirect);
+    }
+
+    @PostMapping(value = "/oauth/token", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public void token(@RequestParam("grant_type") String grantType,
+                      @RequestParam(value = "client_id", required = false) String clientId,
+                      @RequestParam(value = "client_secret", required = false) String clientSecret,
+                      @RequestParam(value = "code", required = false) String code,
+                      @RequestParam(value = "code_verifier", required = false) String codeVerifier,
+                      @RequestParam(value = "redirect_uri", required = false) String redirectUri,
+                      HttpServletRequest request,
+                      HttpServletResponse response) throws IOException {
+
+        response.setContentType("application/json");
+
+        if (!validateConfig()) {
+            sendError(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                    "server_error", "OAuth credentials not configured");
+            return;
+        }
+
+        switch (grantType) {
+            case "authorization_code" -> handleAuthorizationCode(code, codeVerifier, redirectUri, clientId, response);
+            case "client_credentials" -> handleClientCredentials(clientId, clientSecret, response);
+            default -> sendError(response, HttpServletResponse.SC_BAD_REQUEST,
+                    "unsupported_grant_type", "Supported: authorization_code, client_credentials");
+        }
+    }
+
+    private void handleAuthorizationCode(String code, String codeVerifier, String redirectUri,
+                                         String clientId, HttpServletResponse response) throws IOException {
+        if (code == null || code.isBlank()) {
+            sendError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid_request", "Missing code");
+            return;
+        }
+
+        AuthCode authCode = pendingCodes.remove(code);
+        if (authCode == null) {
+            sendError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid_grant", "Invalid or expired code");
+            return;
+        }
+
+        if (authCode.expiresAt().isBefore(Instant.now())) {
+            sendError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid_grant", "Code expired");
+            return;
+        }
+
+        if (authCode.redirectUri() != null && !authCode.redirectUri().equals(redirectUri)) {
+            sendError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid_grant", "redirect_uri mismatch");
+            return;
+        }
+
+        if (authCode.codeChallenge() != null && !authCode.codeChallenge().isBlank()) {
+            if (codeVerifier == null || codeVerifier.isBlank()) {
+                sendError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid_grant", "Missing code_verifier");
+                return;
+            }
+            if (!verifyPkce(codeVerifier, authCode.codeChallenge(), authCode.codeChallengeMethod())) {
+                sendError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid_grant", "PKCE verification failed");
+                return;
+            }
+        }
+
+        issueToken(response);
+    }
+
+    private void handleClientCredentials(String clientId, String clientSecret,
+                                         HttpServletResponse response) throws IOException {
+        if (!expectedClientId.equals(clientId) || !expectedClientSecret.equals(clientSecret)) {
+            sendError(response, HttpServletResponse.SC_UNAUTHORIZED, "invalid_client", "Invalid client credentials");
+            return;
+        }
+        issueToken(response);
+    }
+
+    private void issueToken(HttpServletResponse response) throws IOException {
         Instant now = Instant.now();
         String accessToken = Jwts.builder()
                 .subject("mcp-client")
@@ -68,6 +171,36 @@ public class OAuthTokenController {
                 "{\"access_token\":\"" + accessToken + "\","
                 + "\"token_type\":\"Bearer\","
                 + "\"expires_in\":" + TOKEN_EXPIRY_SECONDS + "}");
+    }
+
+    private boolean verifyPkce(String codeVerifier, String codeChallenge, String method) {
+        if ("S256".equals(method)) {
+            try {
+                MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                byte[] hash = digest.digest(codeVerifier.getBytes(StandardCharsets.US_ASCII));
+                String computed = Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
+                return computed.equals(codeChallenge);
+            } catch (NoSuchAlgorithmException e) {
+                return false;
+            }
+        }
+        return codeVerifier.equals(codeChallenge);
+    }
+
+    private boolean validateConfig() {
+        return expectedClientId != null && !expectedClientId.isBlank()
+                && expectedClientSecret != null && !expectedClientSecret.isBlank();
+    }
+
+    private void cleanExpiredCodes() {
+        Instant now = Instant.now();
+        pendingCodes.entrySet().removeIf(e -> e.getValue().expiresAt().isBefore(now));
+    }
+
+    private String generateCode() {
+        byte[] bytes = new byte[32];
+        RANDOM.nextBytes(bytes);
+        return HexFormat.of().formatHex(bytes);
     }
 
     static SecretKey getSigningKey() {
@@ -92,4 +225,7 @@ public class OAuthTokenController {
         response.getWriter().write(
                 "{\"error\":\"" + error + "\",\"error_description\":\"" + description + "\"}");
     }
+
+    private record AuthCode(String codeChallenge, String codeChallengeMethod,
+                             String redirectUri, Instant expiresAt) {}
 }
