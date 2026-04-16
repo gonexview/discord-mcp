@@ -25,7 +25,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        return path.startsWith("/actuator/") || path.equals("/authorize") || path.equals("/oauth/token");
+        return path.startsWith("/actuator/") || path.startsWith("/.well-known/") || path.equals("/authorize") || path.equals("/token") || path.equals("/oauth/token");
     }
 
     @Override

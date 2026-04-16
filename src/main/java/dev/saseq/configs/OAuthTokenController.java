@@ -85,6 +85,48 @@ public class OAuthTokenController {
         response.sendRedirect(redirect);
     }
 
+    @GetMapping("/.well-known/oauth-authorization-server")
+    public void authServerMetadata(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        response.setContentType("application/json");
+        String base = baseUrl(request);
+        response.getWriter().write(
+                "{\"issuer\":\"" + base + "\","
+                + "\"authorization_endpoint\":\"" + base + "/authorize\","
+                + "\"token_endpoint\":\"" + base + "/token\","
+                + "\"response_types_supported\":[\"code\"],"
+                + "\"grant_types_supported\":[\"authorization_code\",\"client_credentials\"],"
+                + "\"code_challenge_methods_supported\":[\"S256\"],"
+                + "\"token_endpoint_auth_methods_supported\":[\"client_secret_post\"]}");
+    }
+
+    @GetMapping("/.well-known/oauth-protected-resource")
+    public void protectedResourceMetadata(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        response.setContentType("application/json");
+        String base = baseUrl(request);
+        response.getWriter().write(
+                "{\"resource\":\"" + base + "\","
+                + "\"authorization_servers\":[\"" + base + "\"]}");
+    }
+
+    private String baseUrl(HttpServletRequest request) {
+        String scheme = request.getHeader("X-Forwarded-Proto");
+        if (scheme == null) scheme = request.getScheme();
+        String host = request.getHeader("X-Forwarded-Host");
+        if (host == null) host = request.getHeader("Host");
+        return scheme + "://" + host;
+    }
+
+    @PostMapping(value = "/token", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public void tokenAlias(@RequestParam("grant_type") String grantType,
+                           @RequestParam(value = "client_id", required = false) String clientId,
+                           @RequestParam(value = "client_secret", required = false) String clientSecret,
+                           @RequestParam(value = "code", required = false) String code,
+                           @RequestParam(value = "code_verifier", required = false) String codeVerifier,
+                           @RequestParam(value = "redirect_uri", required = false) String redirectUri,
+                           HttpServletRequest request, HttpServletResponse response) throws IOException {
+        token(grantType, clientId, clientSecret, code, codeVerifier, redirectUri, request, response);
+    }
+
     @PostMapping(value = "/oauth/token", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
     public void token(@RequestParam("grant_type") String grantType,
                       @RequestParam(value = "client_id", required = false) String clientId,
