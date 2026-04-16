@@ -17,14 +17,26 @@ import dev.saseq.services.EmojiService;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.requests.GatewayIntent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallbackProvider;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.Arrays;
+import java.util.Set;
+import java.util.stream.Collectors;
+
 @Configuration
 public class DiscordMcpConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(DiscordMcpConfig.class);
+
+    @Value("${discord.mcp.tools.enabled:}")
+    private String enabledToolsConfig;
+
     @Bean
     public ToolCallbackProvider discordTools(DiscordService discordService,
                                              MessageService messageService,
@@ -40,7 +52,7 @@ public class DiscordMcpConfig {
                                              InviteService inviteService,
                                              ChannelPermissionService channelPermissionService,
                                              EmojiService emojiService) {
-        return MethodToolCallbackProvider.builder().toolObjects(
+        ToolCallbackProvider delegate = MethodToolCallbackProvider.builder().toolObjects(
                 discordService,
                 messageService,
                 userService,
@@ -56,6 +68,19 @@ public class DiscordMcpConfig {
                 channelPermissionService,
                 emojiService
         ).build();
+
+        if (enabledToolsConfig == null || enabledToolsConfig.isBlank()) {
+            log.warn("discord.mcp.tools.enabled is not configured. ALL tools are exposed.");
+            return delegate;
+        }
+
+        Set<String> allowedTools = Arrays.stream(enabledToolsConfig.split(","))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .collect(Collectors.toSet());
+
+        log.info("Tool allowlist active: {} tools enabled out of available set.", allowedTools.size());
+        return new FilteredToolCallbackProvider(delegate, allowedTools);
     }
 
     @Bean
